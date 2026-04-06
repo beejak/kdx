@@ -1,0 +1,49 @@
+{
+  "collected_at": "2024-06-01T12:00:00Z",
+  "cluster_name": "docker-desktop",
+  "namespace": "kdx-test",
+  "deployment": {
+    "name": "badimage-demo",
+    "namespace": "kdx-test",
+    "desired_replicas": 1,
+    "ready_replicas": 0,
+    "available_replicas": 0,
+    "conditions": [],
+    "image": "registry.does-not-exist.invalid/myapp:v1.2.3",
+    "selector": {"app": "badimage-demo"}
+  },
+  "pods": [
+    {
+      "pod_name": "badimage-demo-ghi789",
+      "phase": "Pending",
+      "node_name": null,
+      "conditions": [],
+      "container_statuses": [
+        {
+          "name": "app",
+          "ready": false,
+          "restart_count": 0,
+          "state": "waiting",
+          "reason": "ImagePullBackOff",
+          "exit_code": null,
+          "last_state_reason": null,
+          "last_exit_code": null
+        }
+      ],
+      "resource_limits": {
+        "app": {
+          "cpu_request": null,
+          "cpu_limit": null,
+          "memory_request": "32Mi",
+          "memory_limit": null
+        }
+      },
+      "events": [],
+      "logs": null,
+      "previous_logs": null
+    }
+  ],
+  "namespace_events": [],
+  "failure_class": "ImagePullBackOff",
+  "mock": true
+}

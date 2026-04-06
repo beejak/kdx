@@ -1,0 +1,57 @@
+{
+  "collected_at": "2024-06-01T12:00:00Z",
+  "cluster_name": "docker-desktop",
+  "namespace": "kdx-test",
+  "deployment": {
+    "name": "crash-demo",
+    "namespace": "kdx-test",
+    "desired_replicas": 1,
+    "ready_replicas": 0,
+    "available_replicas": 0,
+    "conditions": [{"type": "Available", "status": "False"}],
+    "image": "busybox:1.36",
+    "selector": {"app": "crash-demo"}
+  },
+  "pods": [
+    {
+      "pod_name": "crash-demo-abc123",
+      "phase": "Running",
+      "node_name": "node-1",
+      "conditions": [{"type": "Ready", "status": "False"}],
+      "container_statuses": [
+        {
+          "name": "crasher",
+          "ready": false,
+          "restart_count": 12,
+          "state": "waiting",
+          "reason": "CrashLoopBackOff",
+          "exit_code": null,
+          "last_state_reason": "Error",
+          "last_exit_code": 1
+        }
+      ],
+      "resource_limits": {
+        "crasher": {
+          "cpu_request": null,
+          "cpu_limit": null,
+          "memory_request": "32Mi",
+          "memory_limit": "64Mi"
+        }
+      },
+      "events": [
+        {
+          "timestamp": "2024-06-01T11:59:00Z",
+          "reason": "BackOff",
+          "message": "Back-off restarting failed container crasher",
+          "count": 5,
+          "source_component": "kubelet"
+        }
+      ],
+      "logs": "ERROR: cannot connect to db:5432\n",
+      "previous_logs": "ERROR: cannot connect to db:5432\n"
+    }
+  ],
+  "namespace_events": [],
+  "failure_class": "CrashLoopBackOff",
+  "mock": true
+}

@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-demo
+  namespace: kdx-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-demo
+  template:
+    metadata:
+      labels:
+        app: oom-demo
+    spec:
+      containers:
+        - name: memory-hog
+          image: python:3.12-slim
+          command: ["python3", "-c", "data=[' '*(1024*1024) for _ in range(400)]"]
+          resources:
+            requests:
+              memory: "64Mi"
+            limits:
+              memory: "128Mi"

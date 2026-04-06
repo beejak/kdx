@@ -1,0 +1,57 @@
+{
+  "collected_at": "2024-06-01T12:00:00Z",
+  "cluster_name": "docker-desktop",
+  "namespace": "kdx-test",
+  "deployment": {
+    "name": "oom-demo",
+    "namespace": "kdx-test",
+    "desired_replicas": 1,
+    "ready_replicas": 0,
+    "available_replicas": 0,
+    "conditions": [],
+    "image": "python:3.12-slim",
+    "selector": {"app": "oom-demo"}
+  },
+  "pods": [
+    {
+      "pod_name": "oom-demo-def456",
+      "phase": "Running",
+      "node_name": "node-1",
+      "conditions": [],
+      "container_statuses": [
+        {
+          "name": "memory-hog",
+          "ready": false,
+          "restart_count": 3,
+          "state": "waiting",
+          "reason": "OOMKilled",
+          "exit_code": 137,
+          "last_state_reason": "OOMKilled",
+          "last_exit_code": 137
+        }
+      ],
+      "resource_limits": {
+        "memory-hog": {
+          "cpu_request": null,
+          "cpu_limit": null,
+          "memory_request": "64Mi",
+          "memory_limit": "128Mi"
+        }
+      },
+      "events": [
+        {
+          "timestamp": "2024-06-01T11:58:00Z",
+          "reason": "OOMKilling",
+          "message": "Container memory-hog exceeded its limit",
+          "count": 1,
+          "source_component": "kubelet"
+        }
+      ],
+      "logs": "Killed\n",
+      "previous_logs": null
+    }
+  ],
+  "namespace_events": [],
+  "failure_class": "OOMKilled",
+  "mock": true
+}

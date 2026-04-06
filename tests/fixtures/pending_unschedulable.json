@@ -1,0 +1,59 @@
+{
+  "collected_at": "2024-06-01T12:00:00Z",
+  "cluster_name": "docker-desktop",
+  "namespace": "kdx-test",
+  "deployment": {
+    "name": "pending-demo",
+    "namespace": "kdx-test",
+    "desired_replicas": 1,
+    "ready_replicas": 0,
+    "available_replicas": 0,
+    "conditions": [],
+    "image": "nginx:1.25",
+    "selector": {"app": "pending-demo"}
+  },
+  "pods": [
+    {
+      "pod_name": "pending-demo-jkl012",
+      "phase": "Pending",
+      "node_name": null,
+      "conditions": [
+        {"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}
+      ],
+      "container_statuses": [
+        {
+          "name": "app",
+          "ready": false,
+          "restart_count": 0,
+          "state": "waiting",
+          "reason": "ContainerCreating",
+          "exit_code": null,
+          "last_state_reason": null,
+          "last_exit_code": null
+        }
+      ],
+      "resource_limits": {
+        "app": {
+          "cpu_request": null,
+          "cpu_limit": null,
+          "memory_request": "32Mi",
+          "memory_limit": null
+        }
+      },
+      "events": [
+        {
+          "timestamp": "2024-06-01T11:57:00Z",
+          "reason": "FailedScheduling",
+          "message": "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector.",
+          "count": 5,
+          "source_component": "default-scheduler"
+        }
+      ],
+      "logs": null,
+      "previous_logs": null
+    }
+  ],
+  "namespace_events": [],
+  "failure_class": "Pending",
+  "mock": true
+}

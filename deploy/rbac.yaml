@@ -1,0 +1,36 @@
+---
+# Read-only ClusterRole for kdx
+# Apply with: kubectl apply -f deploy/rbac.yaml
+# Then bind to your service account or user as needed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kdx-reader
+  labels:
+    app.kubernetes.io/name: kdx
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "nodes"]
+    verbs: ["get", "list"]
+---
+# Example ClusterRoleBinding — bind to a ServiceAccount in your namespace.
+# Replace <namespace> and <service-account-name> as appropriate.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kdx-reader-binding
+  labels:
+    app.kubernetes.io/name: kdx
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kdx-reader
+subjects:
+  - kind: ServiceAccount
+    name: <service-account-name>
+    namespace: <namespace>

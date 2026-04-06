@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m pytest*)",
+      "Bash(pytest*)",
+      "Bash(python3 -m ruff*)",
+      "Bash(ruff*)",
+      "Bash(kubectl*)",
+      "Bash(kdx*)",
+      "Bash(bash /root/cicd/scripts/*)",
+      "Bash(python /root/cicd/scripts/*)",
+      "Bash(python3 /root/cicd/scripts/*)",
+      "Bash(make*)",
+      "Bash(pip install*)"
+    ],
+    "deny": [
+      "Bash(kubectl delete namespace default*)",
+      "Bash(kubectl delete node*)",
+      "Bash(kubectl delete namespace kube-system*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /root/cicd && ruff check kdx/ --fix --quiet 2>&1 | head -10 || true"
+          }
+        ]
+      }
+    ]
+  }
+}

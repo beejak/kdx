@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: badimage-demo
+  namespace: kdx-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: badimage-demo
+  template:
+    metadata:
+      labels:
+        app: badimage-demo
+    spec:
+      containers:
+        - name: app
+          image: registry.does-not-exist.invalid/myapp:v1.2.3
+          resources:
+            requests:
+              memory: "32Mi"
