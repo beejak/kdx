@@ -12,7 +12,7 @@ Target failure classes: CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending/U
 
 ## Tech stack
 
-- Python 3.12, Click 8, Rich 13, Pydantic v2, anthropic SDK, kubernetes Python client
+- Python 3.12, Click 8, Rich 13, Pydantic v2, anthropic SDK, openai SDK, kubernetes Python client
 - pip + pyproject.toml (no Poetry)
 - pytest + pytest-mock for tests
 - ruff for lint/format
@@ -25,14 +25,15 @@ Target failure classes: CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending/U
 kdx/
 ├── __init__.py               # __version__ = "0.1.0"
 ├── cli.py                    # Click entry point — thin orchestration only
-├── config.py                 # Settings dataclass, env var loading
+├── config.py                 # Settings dataclass, env var loading, build_provider() factory
 ├── collector/
 │   ├── types.py              # ALL shared Pydantic models (DiagnosisContext, DiagnosisResult, etc.)
 │   ├── k8s.py                # Live collector — kubernetes SDK only, no subprocess
 │   └── mock.py               # Loads DiagnosisContext from tests/fixtures/<name>.json
 ├── diagnosis/
-│   ├── prompts.py            # System prompt string + build_context_message()
-│   └── engine.py             # Claude API call → DiagnosisResult or raises DiagnosisError
+│   ├── prompts.py            # System prompt, RETRY_SYSTEM_PROMPT, build_context_message()
+│   ├── providers.py          # LLMProvider protocol, AnthropicProvider, OpenAICompatibleProvider
+│   └── engine.py             # Calls provider.complete(), parses result, handles retry
 └── output/
     └── formatter.py          # Rich terminal output
 
@@ -64,14 +65,15 @@ scripts/
 cli.py → config.py, collector/*, diagnosis/*, output/*
 collector/k8s.py → collector/types.py only
 collector/mock.py → collector/types.py only
-diagnosis/engine.py → collector/types.py, diagnosis/prompts.py
+diagnosis/engine.py → collector/types.py, diagnosis/prompts.py, diagnosis/providers.py
 diagnosis/prompts.py → collector/types.py only
+diagnosis/providers.py → collector/types.py only
 output/formatter.py → collector/types.py only
 ```
 
-`diagnosis/engine.py` receives `DiagnosisContext` as a function argument.
+`diagnosis/engine.py` receives `DiagnosisContext` and an `LLMProvider` as arguments.
 It never imports from `collector/k8s.py` or `collector/mock.py`.
-All shared types live in `collector/types.py` — that is the only cross-boundary import allowed.
+All shared types live in `collector/types.py` — the only cross-boundary import allowed.
 
 ---
 
@@ -234,39 +236,48 @@ def list_fixtures() -> list[str]:
 ## Diagnosis engine (diagnosis/engine.py)
 
 ```python
-def diagnose(ctx: DiagnosisContext, settings: Settings) -> DiagnosisResult:
+def diagnose(ctx: DiagnosisContext, provider: LLMProvider, max_tokens: int = 1024) -> DiagnosisResult:
     ...
 ```
 
-### Claude call
+Engine receives a `LLMProvider` instance (not `Settings`). It never constructs a provider itself.
 
-- Model: `settings.model` (default `claude-sonnet-4-5`)
-- `max_tokens`: `settings.max_tokens` (default `1024`)
-- Timeout: 30 seconds. Use `anthropic.Anthropic(timeout=30.0)`
-- No retries in the SDK — catch `anthropic.APIStatusError` with status 529 and raise `DiagnosisError("Claude is overloaded, try again")`
-- All other API exceptions → wrap in `DiagnosisError`
+### Call + retry loop
+
+```python
+def diagnose(ctx: DiagnosisContext, provider: LLMProvider, max_tokens: int = 1024) -> DiagnosisResult:
+    user_content = build_context_message(ctx)
+    for attempt in range(2):
+        prompt = SYSTEM_PROMPT if attempt == 0 else RETRY_SYSTEM_PROMPT
+        raw = provider.complete(prompt, user_content, max_tokens)
+        try:
+            parsed = _extract_json(raw)
+            return DiagnosisResult.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError, DiagnosisError, ValueError) as exc:
+            if attempt == 1:
+                raise DiagnosisError(f"Invalid diagnosis response: {raw[:500]}") from exc
+    raise DiagnosisError("Diagnosis failed")  # unreachable — satisfies type checker
+```
+
+**Why 2 attempts:** Local models (< 7B parameters) often wrap their response in prose or markdown on the first try. The retry uses `RETRY_SYSTEM_PROMPT` — a stripped-down prompt that repeats the JSON-only instruction. Claude (Anthropic) rarely needs the retry but the logic applies uniformly to all providers.
 
 ### Response parsing
 
-Claude must return a JSON object. Extract it like this (handles fenced block or raw JSON):
-
 ```python
-import json, re
-
 def _extract_json(text: str) -> dict:
+    dec = json.JSONDecoder()
     # Try fenced block first
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        return json.loads(match.group(1))
+    m = re.search(r"```(?:json)?\s*(\{)", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return dec.raw_decode(text[m.start(1):])[0]
     # Fall back to raw JSON
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start == -1 or end == 0:
+    brace = text.find("{")
+    if brace == -1:
         raise DiagnosisError(f"No JSON found in response: {text[:200]}")
-    return json.loads(text[start:end])
+    return dec.raw_decode(text[brace:])[0]
 ```
 
-On `json.JSONDecodeError` or `ValidationError` → raise `DiagnosisError` with the raw response truncated to 500 chars.
+On `json.JSONDecodeError` or `ValidationError` → the loop retries once, then raises `DiagnosisError`.
 
 ---
 
@@ -297,6 +308,25 @@ Schema:
 }
 ```
 
+### RETRY_SYSTEM_PROMPT
+
+Used on the second attempt when the first response fails JSON parsing. Shorter and more forceful — aimed at local models that wrap their output in prose.
+
+```
+Output ONLY a valid JSON object. No markdown. No explanation. No prose.
+Start with { and end with }. Nothing before or after.
+
+Required schema:
+{
+  "failure_class": "CrashLoopBackOff|OOMKilled|ImagePullBackOff|Pending|Unknown",
+  "root_cause": "string",
+  "evidence": ["string"],
+  "fix_command": "string",
+  "fix_explanation": "string",
+  "confidence": "high|medium|low"
+}
+```
+
 ### build_context_message(ctx: DiagnosisContext) -> str
 
 1. Prepend: `PRE-CLASSIFICATION: {ctx.failure_class}\n\n`
@@ -311,20 +341,56 @@ Schema:
 ```python
 class Settings:
     def __init__(self):
-        self.anthropic_api_key: str = self._require("ANTHROPIC_API_KEY")
-        self.model: str = os.getenv("KDX_MODEL", "claude-sonnet-4-5")
+        self.provider: str = os.getenv("KDX_PROVIDER", "anthropic")
+        # API key only required for anthropic provider
+        if self.provider == "anthropic":
+            self.anthropic_api_key: str = self._require("ANTHROPIC_API_KEY")
+        else:
+            self.anthropic_api_key: str = ""
+        default_timeout = "30" if self.provider == "anthropic" else "120"
+        self.timeout: float = float(os.getenv("KDX_TIMEOUT", default_timeout))
+        self.model: str = os.getenv(
+            "KDX_MODEL",
+            "claude-sonnet-4-5" if self.provider == "anthropic" else "llama3.1:8b",
+        )
         self.max_tokens: int = int(os.getenv("KDX_MAX_TOKENS", "1024"))
+        self.local_base_url: str = os.getenv("KDX_LOCAL_BASE_URL", "http://localhost:11434/v1")
+        self.local_api_key: str = os.getenv("KDX_LOCAL_API_KEY", "ollama")
 
     @staticmethod
     def _require(key: str) -> str:
         v = os.getenv(key)
         if not v:
-            raise SystemExit(f"[kdx] {key} is not set. Copy .env.example to .env and fill it in.")
+            import click
+            click.echo(f"[kdx] {key} is not set. Copy .env.example to .env and fill it in.", err=True)
+            raise SystemExit(2)
         return v
 ```
 
-`Settings()` is constructed in `cli.py` only when the engine will be called.
-For `--dump-context`-only flows or `--mock` flows, `Settings()` is still constructed — the API key is always required to avoid silent partial runs. (Product decision: if you want keyless mock runs, gate `Settings()` behind `if not mock_fixture`.)
+`build_provider(settings: Settings) -> LLMProvider` is a factory in `config.py`:
+
+```python
+def build_provider(settings: Settings) -> "LLMProvider":
+    from kdx.diagnosis.providers import AnthropicProvider, OpenAICompatibleProvider
+    if settings.provider == "anthropic":
+        return AnthropicProvider(
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+            timeout=settings.timeout,
+        )
+    if settings.provider == "openai-compatible":
+        return OpenAICompatibleProvider(
+            base_url=settings.local_base_url,
+            api_key=settings.local_api_key,
+            model=settings.model,
+            timeout=settings.timeout,
+        )
+    import click
+    click.echo(f"[kdx] Unknown provider '{settings.provider}'. Use 'anthropic' or 'openai-compatible'.", err=True)
+    raise SystemExit(2)
+```
+
+`Settings()` is constructed in `cli.py` before any command runs. The API key is only required when `KDX_PROVIDER=anthropic`.
 
 ---
 
@@ -617,14 +683,17 @@ Build in this order — each phase can be tested before starting the next.
 5. `tests/fixtures/*.json` — hand-craft one per failure class matching the schema exactly
 6. `kdx/collector/mock.py` — load_fixture(), list_fixtures()
 7. `tests/conftest.py` + `tests/test_collector.py` — fixture validation test passes
-8. `kdx/diagnosis/prompts.py` — system prompt + build_context_message()
-9. `kdx/diagnosis/engine.py` — Claude call, _extract_json(), DiagnosisError
-10. `tests/test_engine.py` — all four fixtures, patched SDK, error cases
-11. `kdx/output/formatter.py` — Rich panels
-12. Wire `kdx/cli.py` fully — all options, exit codes
-13. `tests/test_formatter.py` — smoke tests
-14. `kdx/collector/k8s.py` — live collector (requires Docker Desktop k8s)
-15. `scenarios/` YAMLs + `scripts/` — manual QA end-to-end
+8. `kdx/diagnosis/prompts.py` — SYSTEM_PROMPT, RETRY_SYSTEM_PROMPT, build_context_message()
+9. `kdx/diagnosis/providers.py` — LLMProvider protocol, AnthropicProvider, OpenAICompatibleProvider
+10. Update `kdx/config.py` — add provider fields to Settings, add build_provider()
+11. `kdx/diagnosis/engine.py` — calls provider.complete(), retry loop, _extract_json()
+12. `tests/test_providers.py` — all provider tests
+13. Update `tests/test_engine.py` — mock provider directly (not Anthropic SDK)
+14. `kdx/output/formatter.py` — Rich panels
+15. Wire `kdx/cli.py` fully — all options, exit codes, build_provider()
+16. `tests/test_formatter.py` + `tests/test_cli.py` — smoke tests
+17. `kdx/collector/k8s.py` — live collector (requires Docker Desktop k8s)
+18. `scenarios/` YAMLs + `scripts/` — manual QA end-to-end
 
 ---
 
@@ -687,7 +756,7 @@ Use to generate tests for a module that is missing them or has low coverage.
 2. **List all public functions** and their signatures.
 3. **For each function write:** one happy-path test + one error/edge-case test minimum.
 4. **Follow existing patterns** in `tests/conftest.py` and adjacent test files. Do not introduce new pytest plugins or fixtures not already in the project.
-5. **Engine tests:** always patch `anthropic.Anthropic.messages.create`. Never construct a real `Settings()` — the `autouse` fixture in `conftest.py` covers the env var.
+5. **Engine tests:** mock the provider directly — `mocker.MagicMock(spec=LLMProvider)`. Never patch the Anthropic or OpenAI SDK in engine tests. Never construct a real `Settings()` — the `autouse` fixture in `conftest.py` covers the env var.
 6. **Collector tests:** always use `load_fixture()`. Never call `k8s.collect()` in a unit test.
 7. **Name tests** as `test_<function>_<scenario>`, e.g. `test_load_fixture_missing_raises`.
 8. Run `make gate` when done. All new tests must pass.
@@ -809,3 +878,227 @@ Violations it checks:
 - `diagnosis/prompts.py` importing from `collector/k8s` or `collector/mock`
 - `output/formatter.py` importing from `diagnosis/` or `collector/k8s` or `collector/mock`
 - `cli.py` containing any business logic (heuristic: no direct k8s SDK calls)
+
+---
+
+## Local LLM support (diagnosis/providers.py)
+
+### Overview
+
+`kdx` supports two LLM providers: `anthropic` (default) and `openai-compatible` (Ollama, LM Studio, vLLM, or any server that speaks the OpenAI chat completions API). The provider is selected via `KDX_PROVIDER`. All diagnosis logic is identical — only the transport layer changes.
+
+**Critical disclaimer:** Local models (especially < 7B parameters) do not reliably emit clean JSON on the first attempt. They frequently wrap responses in prose, markdown, or add preambles. The engine runs a 2-attempt retry loop — on parse failure, it retries with `RETRY_SYSTEM_PROMPT`, which is shorter and more forceful. This retry is provider-agnostic (applies to all providers) but is most commonly triggered by local models.
+
+Minimum recommended model size: **7B parameters**. Models below 3B will not reliably follow the JSON schema even with the retry prompt.
+
+### LLMProvider protocol (providers.py)
+
+```python
+from typing import Protocol, runtime_checkable
+from kdx.collector.types import DiagnosisError
+
+@runtime_checkable
+class LLMProvider(Protocol):
+    def complete(self, system: str, user: str, max_tokens: int) -> str:
+        """Call the LLM. Returns raw text. Raises DiagnosisError on any failure."""
+        ...
+```
+
+`complete()` is the only method. It handles all provider-specific error translation — callers only ever see `DiagnosisError` or a string back.
+
+### AnthropicProvider
+
+```python
+class AnthropicProvider:
+    def __init__(self, api_key: str, model: str, timeout: float):
+        from anthropic import Anthropic
+        self._client = Anthropic(api_key=api_key, timeout=timeout)
+        self._model = model
+
+    def complete(self, system: str, user: str, max_tokens: int) -> str:
+        from anthropic import APIStatusError
+        try:
+            msg = self._client.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+        except APIStatusError as e:
+            if e.status_code == 529:
+                raise DiagnosisError("Claude is overloaded, try again") from e
+            raise DiagnosisError(str(e)) from e
+        except Exception as e:
+            raise DiagnosisError(str(e)) from e
+        return msg.content[0].text
+```
+
+### OpenAICompatibleProvider
+
+```python
+class OpenAICompatibleProvider:
+    def __init__(self, base_url: str, api_key: str, model: str, timeout: float):
+        from openai import OpenAI
+        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        self._model = model
+
+    def complete(self, system: str, user: str, max_tokens: int) -> str:
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+        except Exception as e:
+            raise DiagnosisError(str(e)) from e
+        return resp.choices[0].message.content or ""
+```
+
+### Updated engine.py signature
+
+```python
+def diagnose(ctx: DiagnosisContext, provider: LLMProvider, max_tokens: int = 1024) -> DiagnosisResult:
+```
+
+`engine.py` imports `LLMProvider` from `diagnosis/providers.py`. It never imports `Settings`, `AnthropicProvider`, or `OpenAICompatibleProvider` — it works with the protocol only.
+
+### Updated cli.py
+
+```python
+settings = Settings()
+provider = build_provider(settings)
+result = run_diagnosis(ctx, provider, settings.max_tokens)
+```
+
+### Environment variables (full table including local LLM)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | Only if `KDX_PROVIDER=anthropic` | — | Anthropic API key |
+| `KDX_PROVIDER` | No | `anthropic` | `anthropic` or `openai-compatible` |
+| `KDX_MODEL` | No | See below | Model name. Default: `claude-sonnet-4-5` (anthropic) or `llama3.1:8b` (openai-compatible) |
+| `KDX_MAX_TOKENS` | No | `1024` | Max response tokens |
+| `KDX_TIMEOUT` | No | See below | HTTP timeout in seconds. Default: `30` (anthropic) or `120` (openai-compatible) |
+| `KDX_LOCAL_BASE_URL` | No | `http://localhost:11434/v1` | Base URL for openai-compatible provider |
+| `KDX_LOCAL_API_KEY` | No | `ollama` | API key for local provider (Ollama accepts any string) |
+
+### Recommended local models
+
+| Model | Pull command | JSON reliability | Notes |
+|-------|-------------|-----------------|-------|
+| `qwen2.5:7b` | `ollama pull qwen2.5:7b` | Excellent | Best local option for structured output |
+| `llama3.1:8b` | `ollama pull llama3.1:8b` | Good | General-purpose, widely tested |
+| `mistral:7b` | `ollama pull mistral:7b` | Good | Fast on CPU |
+| `llama3.2:3b` | `ollama pull llama3.2:3b` | Fair | Only for RAM-constrained machines |
+
+Models below 3B are not supported — they cannot reliably maintain the JSON schema.
+
+### Quick start with Ollama
+
+```bash
+# Install Ollama (https://ollama.com)
+ollama pull qwen2.5:7b
+
+# Configure kdx to use local model
+echo "KDX_PROVIDER=openai-compatible" >> .env
+echo "KDX_MODEL=qwen2.5:7b" >> .env
+
+# Run — no Anthropic key needed
+.venv/bin/kdx diagnose crash-demo --mock crash_loop
+```
+
+### Tests (tests/test_providers.py)
+
+```python
+# Tests to write — follow existing patterns from test_engine.py
+
+def test_anthropic_provider_returns_text(mocker): ...
+    # patch anthropic.Anthropic, verify complete() returns msg.content[0].text
+
+def test_anthropic_provider_529_raises_diagnosis_error(mocker): ...
+    # APIStatusError(status_code=529) → DiagnosisError("Claude is overloaded")
+
+def test_anthropic_provider_other_error_raises_diagnosis_error(mocker): ...
+    # Any other exception → DiagnosisError
+
+def test_openai_compatible_provider_returns_text(mocker): ...
+    # patch openai.OpenAI, verify complete() returns choices[0].message.content
+
+def test_openai_compatible_provider_error_raises_diagnosis_error(mocker): ...
+    # Any exception → DiagnosisError
+
+def test_build_provider_anthropic(monkeypatch): ...
+    # KDX_PROVIDER=anthropic, ANTHROPIC_API_KEY set → returns AnthropicProvider
+
+def test_build_provider_openai_compatible(monkeypatch): ...
+    # KDX_PROVIDER=openai-compatible → returns OpenAICompatibleProvider, no API key needed
+
+def test_build_provider_unknown_exits_2(monkeypatch): ...
+    # KDX_PROVIDER=garbage → SystemExit(2)
+
+def test_anthropic_not_required_for_local_provider(monkeypatch): ...
+    # KDX_PROVIDER=openai-compatible, ANTHROPIC_API_KEY unset → Settings() does not raise
+```
+
+### Updated test_engine.py pattern
+
+Engine tests mock the provider directly, not the underlying SDK:
+
+```python
+def _mock_provider(mocker, text: str):
+    provider = mocker.MagicMock()
+    provider.complete.return_value = text
+    return provider
+
+def test_diagnose_all_fixtures(mocker):
+    for fixture in ("crash_loop", "oom_kill", "image_pull_backoff", "pending_unschedulable"):
+        ctx = load_fixture(fixture)
+        provider = _mock_provider(mocker, json.dumps(_fake_result_dict()))
+        result = engine.diagnose(ctx, provider)
+        assert isinstance(result, DiagnosisResult)
+
+def test_diagnose_retries_on_bad_json(mocker):
+    # First call returns garbage, second call returns valid JSON
+    provider = mocker.MagicMock()
+    provider.complete.side_effect = ["not json <<<", json.dumps(_fake_result_dict())]
+    ctx = load_fixture("crash_loop")
+    result = engine.diagnose(ctx, provider)
+    assert provider.complete.call_count == 2
+    # Second call must use RETRY_SYSTEM_PROMPT
+    assert provider.complete.call_args_list[1][0][0] == RETRY_SYSTEM_PROMPT
+
+def test_diagnose_raises_after_two_failures(mocker):
+    provider = mocker.MagicMock()
+    provider.complete.return_value = "still not json"
+    ctx = load_fixture("crash_loop")
+    with pytest.raises(DiagnosisError):
+        engine.diagnose(ctx, provider)
+    assert provider.complete.call_count == 2
+```
+
+### Boundary checker update (scripts/check_boundaries.py)
+
+Add this rule to the existing checker:
+
+```python
+(
+    "kdx/diagnosis/providers.py",
+    [r"from kdx\.collector\.k8s", r"from kdx\.collector\.mock",
+     r"from kdx\.diagnosis\.engine", r"from kdx\.output"],
+    "providers.py must only import from collector/types.py",
+),
+```
+
+### Phase gate for provider feature
+
+After implementing providers:
+
+```bash
+make gate   # must pass with 0 failures
+# Verify local provider works (requires Ollama running):
+KDX_PROVIDER=openai-compatible KDX_MODEL=qwen2.5:7b \
+  .venv/bin/kdx diagnose crash-demo --mock crash_loop
+```

@@ -50,6 +50,13 @@ RULES: list[tuple[str, list[str], str]] = [
         "output/formatter.py must not import from diagnosis/, collector/k8s, or collector/mock",
     ),
     (
+        "kdx/diagnosis/providers.py",
+        [r"from kdx\.collector\.k8s", r"from kdx\.collector\.mock",
+         r"from kdx\.diagnosis\.engine", r"from kdx\.output",
+         r"import kdx\.collector\.k8s", r"import kdx\.collector\.mock"],
+        "providers.py must only import from collector/types and standard libs",
+    ),
+    (
         "kdx/cli.py",
         [r"from kubernetes\b", r"import kubernetes\b"],
         "cli.py must not contain direct kubernetes SDK calls — use collector/k8s.py",
