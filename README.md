@@ -304,6 +304,18 @@ Tests run entirely in mock mode — no live cluster or API key needed. All 27 te
 
 ---
 
+## Documentation
+
+Full reference documentation is in [`docs/help.md`](docs/help.md), covering:
+
+- Architecture and data-flow diagrams
+- Environment setup: Windows + Docker Desktop/WSL2, macOS, Linux, remote GKE/EKS/AKS, in-cluster
+- LLM provider guides: Anthropic, Ollama, LM Studio, vLLM
+- Mock mode and test fixtures
+- Troubleshooting (8 common issues with exact fix commands)
+
+---
+
 ## Roadmap
 
 - [ ] Slack integration — post diagnosis to a channel when a deploy fails
