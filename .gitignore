@@ -34,7 +34,7 @@ Thumbs.db
 # kdx runtime
 *.kubeconfig
 
-# Claude Code — include settings.json (shared hooks), exclude local overrides
+# include settings.json (shared hooks), exclude local overrides
 .claude/settings.local.json
 
 # Scratch / debug output files
