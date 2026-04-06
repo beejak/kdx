@@ -14,7 +14,6 @@ dependencies = [
     "anthropic>=0.25",
     "openai>=1.0",
     "kubernetes>=29.0",
-    "python-dotenv>=1.0",
 ]
 
 [project.scripts]

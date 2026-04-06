@@ -1,14 +1,11 @@
 import json
-from types import SimpleNamespace
 
-import httpx
 import pytest
-from anthropic import APIStatusError
 
 from kdx.collector.mock import load_fixture
 from kdx.collector.types import DiagnosisError, DiagnosisResult
-from kdx.config import Settings
 from kdx.diagnosis import engine
+from kdx.diagnosis.prompts import RETRY_SYSTEM_PROMPT
 
 
 def _fake_result_dict(failure_class: str = "CrashLoopBackOff") -> dict:
@@ -22,11 +19,10 @@ def _fake_result_dict(failure_class: str = "CrashLoopBackOff") -> dict:
     }
 
 
-def _patch_create(mocker, text: str):
-    mock_client = mocker.patch("kdx.diagnosis.engine.Anthropic").return_value
-    mock_client.messages.create.return_value = SimpleNamespace(
-        content=[SimpleNamespace(text=text)],
-    )
+def _mock_provider(mocker, text: str):
+    provider = mocker.MagicMock()
+    provider.complete.return_value = text
+    return provider
 
 
 @pytest.mark.parametrize(
@@ -36,9 +32,8 @@ def _patch_create(mocker, text: str):
 def test_diagnose_all_fixtures(mocker, fixture):
     ctx = load_fixture(fixture)
     payload = json.dumps(_fake_result_dict())
-    _patch_create(mocker, payload)
-    settings = Settings()
-    out = engine.diagnose(ctx, settings)
+    provider = _mock_provider(mocker, payload)
+    out = engine.diagnose(ctx, provider)
     assert isinstance(out, DiagnosisResult)
     assert out.failure_class == "CrashLoopBackOff"
 
@@ -46,27 +41,34 @@ def test_diagnose_all_fixtures(mocker, fixture):
 def test_diagnose_fenced_json(mocker):
     ctx = load_fixture("crash_loop")
     inner = json.dumps(_fake_result_dict())
-    _patch_create(mocker, f"Here is JSON:\n```json\n{inner}\n```")
-    settings = Settings()
-    out = engine.diagnose(ctx, settings)
+    provider = _mock_provider(mocker, f"Here is JSON:\n```json\n{inner}\n```")
+    out = engine.diagnose(ctx, provider)
     assert out.root_cause == "Container exits on startup."
 
 
 def test_diagnose_bad_json_raises(mocker):
     ctx = load_fixture("crash_loop")
-    _patch_create(mocker, "not valid json at all {{{")
-    settings = Settings()
+    provider = mocker.MagicMock()
+    provider.complete.return_value = "not valid json at all {{{"
     with pytest.raises(DiagnosisError, match="Invalid diagnosis response"):
-        engine.diagnose(ctx, settings)
+        engine.diagnose(ctx, provider)
+    assert provider.complete.call_count == 2
 
 
-def test_diagnose_api_529_raises(mocker):
+def test_diagnose_retries_on_bad_json(mocker):
+    provider = mocker.MagicMock()
+    provider.complete.side_effect = ["not json <<<", json.dumps(_fake_result_dict())]
     ctx = load_fixture("crash_loop")
-    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    resp = httpx.Response(529, request=req)
-    exc = APIStatusError("overloaded", response=resp, body={})
-    mock_client = mocker.patch("kdx.diagnosis.engine.Anthropic").return_value
-    mock_client.messages.create.side_effect = exc
-    settings = Settings()
-    with pytest.raises(DiagnosisError, match="Claude is overloaded"):
-        engine.diagnose(ctx, settings)
+    result = engine.diagnose(ctx, provider)
+    assert provider.complete.call_count == 2
+    assert provider.complete.call_args_list[1][0][0] == RETRY_SYSTEM_PROMPT
+    assert isinstance(result, DiagnosisResult)
+
+
+def test_diagnose_raises_after_two_failures(mocker):
+    provider = mocker.MagicMock()
+    provider.complete.return_value = "still not json"
+    ctx = load_fixture("crash_loop")
+    with pytest.raises(DiagnosisError):
+        engine.diagnose(ctx, provider)
+    assert provider.complete.call_count == 2

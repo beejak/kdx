@@ -24,6 +24,20 @@ Schema:
 }
 """
 
+RETRY_SYSTEM_PROMPT = """Output ONLY a valid JSON object. No markdown. No explanation. No prose.
+Start with { and end with }. Nothing before or after.
+
+Required schema:
+{
+  "failure_class": "CrashLoopBackOff|OOMKilled|ImagePullBackOff|Pending|Unknown",
+  "root_cause": "string",
+  "evidence": ["string"],
+  "fix_command": "string",
+  "fix_explanation": "string",
+  "confidence": "high|medium|low"
+}
+"""
+
 
 def _truncate_log_field(value: str | None) -> str | None:
     if value is None:

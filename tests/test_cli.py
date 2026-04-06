@@ -1,28 +1,25 @@
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 from click.testing import CliRunner
 
 from kdx.cli import cli
+from kdx.collector.types import DiagnosisResult
 
 
-def _fake_result_dict() -> dict:
-    return {
-        "failure_class": "CrashLoopBackOff",
-        "root_cause": "Container exits on startup.",
-        "evidence": ["[pod] crash-demo restart loop"],
-        "fix_command": "kubectl logs deploy/crash-demo -n kdx-test",
-        "fix_explanation": "Inspect logs.",
-        "confidence": "high",
-    }
+def _fake_result() -> DiagnosisResult:
+    return DiagnosisResult(
+        failure_class="CrashLoopBackOff",
+        root_cause="Container exits on startup.",
+        evidence=["[pod] crash-demo restart loop"],
+        fix_command="kubectl logs deploy/crash-demo -n kdx-test",
+        fix_explanation="Inspect logs.",
+        confidence="high",
+    )
 
 
 def _patch_engine(mocker):
-    mock_client = mocker.patch("kdx.diagnosis.engine.Anthropic").return_value
-    mock_client.messages.create.return_value = SimpleNamespace(
-        content=[SimpleNamespace(text=json.dumps(_fake_result_dict()))]
-    )
+    mocker.patch("kdx.diagnosis.engine.diagnose", return_value=_fake_result())
 
 
 def test_version():

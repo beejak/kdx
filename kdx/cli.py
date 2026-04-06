@@ -25,7 +25,8 @@ def diagnose(
     dump_context: str | None,
     kube_context: str | None,
 ):
-    from kdx.config import Settings
+    from kdx.config import Settings, build_provider
+    from kdx.diagnosis.engine import diagnose as run_diagnosis
     from kdx.output.formatter import print_error, print_result
 
     try:
@@ -44,9 +45,8 @@ def diagnose(
         if dump_context:
             Path(dump_context).write_text(ctx.model_dump_json(indent=2))
         settings = Settings()
-        from kdx.diagnosis.engine import diagnose as run_diagnosis
-
-        result = run_diagnosis(ctx, settings)
+        provider = build_provider(settings)
+        result = run_diagnosis(ctx, provider, settings.max_tokens)
         print_result(ctx, result)
     except DiagnosisError as exc:
         print_error(str(exc))
