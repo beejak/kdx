@@ -26,7 +26,7 @@ def test_anthropic_provider_529_raises_diagnosis_error(mocker):
     exc = APIStatusError("overloaded", response=resp, body={})
     inst.messages.create.side_effect = exc
     p = AnthropicProvider(api_key="k", model="m", timeout=30.0)
-    with pytest.raises(DiagnosisError, match="Claude is overloaded"):
+    with pytest.raises(DiagnosisError, match="Service overloaded"):
         p.complete("s", "u", 64)
 
 

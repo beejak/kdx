@@ -30,7 +30,7 @@ class AnthropicProvider:
             if status is None and getattr(e, "response", None) is not None:
                 status = getattr(e.response, "status_code", None)
             if status == 529:
-                raise DiagnosisError("Claude is overloaded, try again") from e
+                raise DiagnosisError("Service overloaded (HTTP 529), try again") from e
             raise DiagnosisError(str(e)) from e
         except Exception as e:
             raise DiagnosisError(str(e)) from e

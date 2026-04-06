@@ -6,7 +6,7 @@
 
 **Stop reading logs. Start reading diagnoses.**
 
-`kdx` connects to your Kubernetes cluster, collects every signal from a failing Deployment — events, pod logs, container statuses, resource limits — and asks Claude to produce a plain-English root cause with a copy-pasteable fix. No dashboards. No log diving. One command.
+`kdx` connects to your Kubernetes cluster, collects every signal from a failing Deployment — events, pod logs, container statuses, resource limits — and produces a plain-English root cause with a copy-pasteable fix. No dashboards. No log diving. One command.
 
 ---
 
@@ -70,7 +70,7 @@ $ kdx diagnose api-server -n production
 
 ## Quick start
 
-**Requirements:** Python 3.12+, `kubectl` configured, an [Anthropic API key](https://console.anthropic.com/)
+**Requirements:** Python 3.12+, `kubectl` configured, a model provider API key (or a local model via Ollama)
 
 ```bash
 # 1. Clone and install
@@ -80,7 +80,7 @@ make venv
 
 # 2. Set your API key
 cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+# Edit .env and set your provider API key
 
 # 3. Diagnose a failing deployment
 .venv/bin/kdx diagnose <deployment-name> -n <namespace>
@@ -111,7 +111,7 @@ make gate-phase1   # verify: kdx --version should print 0.1.0
 |-----------|---------|-------|
 | Python | 3.12+ | Required — uses modern union type syntax |
 | kubectl | any | Must be configured and pointing at a cluster |
-| Anthropic API key | — | [Get one here](https://console.anthropic.com/) |
+| Provider API key | — | Required when using a hosted model provider |
 
 ---
 
@@ -125,8 +125,8 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | — | Your Claude API key |
-| `KDX_MODEL` | No | `claude-sonnet-4-5` | Override the Claude model used |
+| `ANTHROPIC_API_KEY` | Yes* | — | API key for the hosted provider (*not required for local models) |
+| `KDX_MODEL` | No | `claude-sonnet-4-5` | Override the model used |
 | `KDX_MAX_TOKENS` | No | `1024` | Override max response tokens |
 | `KDX_LOG_LEVEL` | No | `WARNING` | Python log level (`DEBUG`, `INFO`, `WARNING`) |
 | `KUBECONFIG` | No | `~/.kube/config` | Path to kubeconfig file |
@@ -147,7 +147,7 @@ cp .env.example .env
 |--------|---------|-------------|
 | `-n, --namespace TEXT` | `default` | Kubernetes namespace |
 | `--mock FIXTURE` | — | Use a fixture instead of a live cluster |
-| `--dump-context PATH` | — | Write the collected data to a JSON file before calling Claude |
+| `--dump-context PATH` | — | Write the collected data to a JSON file before running diagnosis |
 | `--context TEXT` | — | Kubeconfig context name to use |
 
 **Examples:**
@@ -261,7 +261,7 @@ kdx diagnose
      │   DiagnosisContext          Immutable snapshot of all signals
      │        │
      ├─► diagnosis/engine.py       Build structured prompt
-     │        │                    Call Claude API (claude-sonnet-4-5)
+     │        │                    Call model provider API
      │        │                    Parse + validate JSON response
      │        ▼
      │   DiagnosisResult           failure_class, root_cause, evidence[], fix_command
@@ -278,13 +278,13 @@ kdx diagnose
 - Last 50 lines of logs from the previous container instance
 - Namespace events (last 30 minutes, max 50)
 
-All data stays local except for the structured context sent to the Claude API.
+All data stays local except for the structured context sent to a remote model provider (if configured).
 
 ---
 
 ## Development
 
-See [CLAUDE.md](CLAUDE.md) for the full architecture, data models, import boundaries, and agent protocols used during development.
+See [CLAUDE.md](CLAUDE.md) for the full architecture, data models, import boundaries, and agent protocols.
 
 ```bash
 # Run all tests (no cluster needed)
@@ -310,7 +310,7 @@ Full reference documentation is in [`docs/help.md`](docs/help.md), covering:
 
 - Architecture and data-flow diagrams
 - Environment setup: Windows + Docker Desktop/WSL2, macOS, Linux, remote GKE/EKS/AKS, in-cluster
-- LLM provider guides: Anthropic, Ollama, LM Studio, vLLM
+- Model provider guides: Anthropic, Ollama, LM Studio, vLLM
 - Mock mode and test fixtures
 - Troubleshooting (8 common issues with exact fix commands)
 

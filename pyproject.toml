@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kdx"
 version = "0.1.0"
-description = "AI-powered Kubernetes deployment failure diagnosis"
+description = "Kubernetes deployment failure diagnosis"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",

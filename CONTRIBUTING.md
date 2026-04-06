@@ -38,9 +38,9 @@ make gate          # lint + boundaries + tests — run this before every commit
 
 **Always use `make <target>`, never bare `pytest` or `ruff`.** The Makefile pins all commands to `.venv/bin/` so you always run the correct Python.
 
-## Agent protocols (for AI-assisted development)
+## Agent protocols (for assisted development)
 
-If you use an AI coding assistant, CLAUDE.md defines specific protocols for common tasks:
+CLAUDE.md defines specific protocols for common tasks:
 
 - `/debug <error>` — structured 5-step triage
 - `/gen-tests <module>` — test generation following project conventions

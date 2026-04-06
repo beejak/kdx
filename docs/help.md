@@ -18,8 +18,8 @@
    - [Linux + minikube or kind](#73-linux--minikube-or-kind)
    - [Remote cluster (GKE / EKS / AKS)](#74-remote-cluster-gke--eks--aks)
    - [Inside a Kubernetes pod (in-cluster)](#75-inside-a-kubernetes-pod-in-cluster)
-8. [LLM provider setup](#8-llm-provider-setup)
-   - [Anthropic Claude (default)](#81-anthropic-claude-default)
+8. [Model provider setup](#8-model-provider-setup)
+   - [Anthropic (default)](#81-anthropic-default)
    - [Ollama (local)](#82-ollama-local)
    - [LM Studio (local)](#83-lm-studio-local)
    - [vLLM (self-hosted)](#84-vllm-self-hosted)
@@ -41,12 +41,12 @@ When a Kubernetes Deployment breaks, you normally have to manually cross-referen
                    You figure it out
 ```
 
-`kdx` automates that entire left side. It connects to your cluster, collects every relevant signal from the failing Deployment, and asks an LLM to produce a single diagnosis:
+`kdx` automates that entire left side. It connects to your cluster, collects every relevant signal from the failing Deployment, and produces a single diagnosis:
 
 ```
   k8s Events ──┐
   Pod logs ────┤
-  Container    ├──► kdx ──► LLM ──► Root cause + Fix command
+  Container    ├──► kdx ──► diagnosis engine ──► Root cause + Fix command
   statuses ────┤
   Resource     │
   limits ──────┘
@@ -90,7 +90,7 @@ When a Kubernetes Deployment breaks, you normally have to manually cross-referen
               ┌─────────────────▼──────────────────┐
               │         config.py                  │
               │  Load .env + env vars              │
-              │  Build LLM provider                │
+              │  Build model provider               │
               │  (Anthropic or OpenAI-compatible)  │
               └─────────────────┬──────────────────┘
                                 │
@@ -112,7 +112,7 @@ When a Kubernetes Deployment breaks, you normally have to manually cross-referen
          │             diagnosis/engine.py                 │
          │                                                  │
          │  1. Build prompt from DiagnosisContext           │
-         │  2. Call LLM provider (attempt 1)                │
+         │  2. Call model provider (attempt 1)              │
          │  3. Parse JSON response                          │
          │  4. If parse fails → retry with stripped prompt  │
          │  5. Validate against DiagnosisResult schema      │
@@ -128,7 +128,7 @@ When a Kubernetes Deployment breaks, you normally have to manually cross-referen
 
 ### Pre-classification logic
 
-Before calling the LLM, `kdx` deterministically classifies the failure from container statuses. This grounds the prompt and reduces hallucination risk.
+Before calling the model provider, `kdx` deterministically classifies the failure from container statuses. This grounds the prompt and improves result quality.
 
 ```
 Container statuses
@@ -148,7 +148,7 @@ Container statuses
         └── None of the above → failure_class = "Unknown"
 ```
 
-### LLM provider selection
+### Model provider selection
 
 ```
 KDX_PROVIDER env var
@@ -174,7 +174,7 @@ KDX_PROVIDER env var
 | Python | 3.12 | Uses modern union type syntax (`str \| None`) |
 | kubectl | any | Must be configured and pointing at a cluster |
 | Kubernetes cluster | v1.20+ | Local or remote |
-| LLM provider | — | Anthropic API key **or** local model via Ollama/LM Studio |
+| Model provider | — | Anthropic API key **or** local model via Ollama/LM Studio |
 
 ---
 
@@ -220,13 +220,13 @@ kdx loads `.env` automatically on startup — no `source` or `export` needed.
 | `KDX_PROVIDER` | No | `anthropic` | `anthropic` or `openai-compatible` |
 | `KDX_MODEL` | No | Provider default | `claude-sonnet-4-5` (Anthropic) or `llama3.1:8b` (local) |
 | `KDX_MAX_TOKENS` | No | `1024` | Maximum response tokens |
-| `KDX_TIMEOUT` | No | `30` (Anthropic) / `120` (local) | HTTP timeout in seconds |
+| `KDX_TIMEOUT` | No | `30` (Anthropic) / `120` (local) | HTTP timeout in seconds (increase for slow local models) |
 | `KDX_LOCAL_BASE_URL` | No | `http://localhost:11434/v1` | Base URL for OpenAI-compatible provider |
 | `KDX_LOCAL_API_KEY` | No | `ollama` | API key for local provider (any string for Ollama) |
 | `KUBECONFIG` | No | `~/.kube/config` | Path to kubeconfig file |
 | `KDX_LOG_LEVEL` | No | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
-### Minimal .env for Anthropic
+### Minimal .env for hosted provider (Anthropic)
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
@@ -253,7 +253,7 @@ KDX_MODEL=qwen2.5:7b
 |--------|-------|---------|-------------|
 | `--namespace TEXT` | `-n` | `default` | Kubernetes namespace |
 | `--mock FIXTURE` | | — | Use a fixture file instead of a live cluster |
-| `--dump-context PATH` | | — | Write collected data to JSON before calling LLM |
+| `--dump-context PATH` | | — | Write collected data to JSON before running diagnosis |
 | `--context TEXT` | | current context | Kubeconfig context to use |
 
 ### Common usage patterns
@@ -335,7 +335,7 @@ kubectl get nodes
 cd /path/to/kdx   # your WSL2 path, e.g. /root/cicd or ~/projects/kdx
 make venv
 cp .env.example .env
-# Edit .env and add ANTHROPIC_API_KEY=sk-ant-...
+# Edit .env and add your provider API key
 ```
 
 **Step 4 — Run a diagnosis**
@@ -395,7 +395,7 @@ git clone https://github.com/beejak/kdx.git
 cd kdx
 make venv
 cp .env.example .env
-# Edit .env — add ANTHROPIC_API_KEY
+# Edit .env — add your provider API key
 ```
 
 **Step 4 — Verify**
@@ -556,19 +556,19 @@ spec:
           valueFrom:
             secretKeyRef:
               name: kdx-secrets
-              key: anthropic-api-key
+              key: provider-api-key
 ```
 
 ---
 
-## 8. LLM provider setup
+## 8. Model provider setup
 
-### 8.1 Anthropic Claude (default)
+### 8.1 Anthropic (default)
 
 **Best for:** Production use, highest diagnosis quality.
 
 ```
-Your machine ──► api.anthropic.com ──► Claude Sonnet
+Your machine ──► api.anthropic.com ──► Anthropic model
 ```
 
 **Setup:**
@@ -742,7 +742,7 @@ Mock mode lets you run `kdx` without a live cluster or an API key (for the colle
   --dump-context tests/fixtures/my_real_failure.json
 ```
 
-This captures the full `DiagnosisContext` before the LLM call. You can then replay it offline:
+This captures the full `DiagnosisContext` before the diagnosis call. You can then replay it offline:
 
 ```bash
 .venv/bin/kdx diagnose api-server --mock my_real_failure
@@ -869,7 +869,7 @@ export KUBECONFIG=/mnt/c/Users/<YourUser>/.kube/config
 
 ### `DiagnosisError: No JSON found in response`
 
-**Cause:** The LLM returned prose instead of a JSON object. This happens mainly with small local models.
+**Cause:** The model returned prose instead of a JSON object. This happens mainly with small local models.
 
 **Fix — use a larger model:**
 ```bash
@@ -886,11 +886,11 @@ KDX_TIMEOUT=180
 
 ---
 
-### `DiagnosisError: Claude is overloaded, try again`
+### `DiagnosisError: Service overloaded (HTTP 529), try again`
 
-**Cause:** Anthropic API returned HTTP 529 (service overloaded).
+**Cause:** The provider API returned HTTP 529 (service overloaded).
 
-**Fix:** Wait 30–60 seconds and try again. If persistent, check [status.anthropic.com](https://status.anthropic.com).
+**Fix:** Wait 30–60 seconds and try again. If persistent for Anthropic, check [status.anthropic.com](https://status.anthropic.com).
 
 ---
 
