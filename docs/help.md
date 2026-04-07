@@ -12,20 +12,22 @@
 4. [Installation](#4-installation)
 5. [Configuration](#5-configuration)
 6. [Usage reference](#6-usage-reference)
-7. [Environment setup guides](#7-environment-setup-guides)
-   - [Windows + Docker Desktop (WSL2)](#71-windows--docker-desktop-wsl2)
-   - [macOS + Docker Desktop](#72-macos--docker-desktop)
-   - [Linux + minikube or kind](#73-linux--minikube-or-kind)
-   - [Remote cluster (GKE / EKS / AKS)](#74-remote-cluster-gke--eks--aks)
-   - [Inside a Kubernetes pod (in-cluster)](#75-inside-a-kubernetes-pod-in-cluster)
-8. [Model provider setup](#8-model-provider-setup)
-   - [Anthropic (default)](#81-anthropic-default)
-   - [Ollama (local)](#82-ollama-local)
-   - [LM Studio (local)](#83-lm-studio-local)
-   - [vLLM (self-hosted)](#84-vllm-self-hosted)
-9. [Mock mode and fixtures](#9-mock-mode-and-fixtures)
-10. [Test scenarios](#10-test-scenarios)
-11. [Troubleshooting](#11-troubleshooting)
+7. [How kdx connects to your cluster](#7-how-kdx-connects-to-your-cluster)
+8. [Working with diagnosis results](#8-working-with-diagnosis-results)
+9. [Environment setup guides](#9-environment-setup-guides)
+   - [Windows + Docker Desktop (WSL2)](#91-windows--docker-desktop-wsl2)
+   - [macOS + Docker Desktop](#92-macos--docker-desktop)
+   - [Linux + minikube or kind](#93-linux--minikube-or-kind)
+   - [Remote cluster (GKE / EKS / AKS)](#94-remote-cluster-gke--eks--aks)
+   - [Inside a Kubernetes pod (in-cluster)](#95-inside-a-kubernetes-pod-in-cluster)
+10. [Model provider setup](#10-model-provider-setup)
+    - [Anthropic (default)](#101-anthropic-default)
+    - [Ollama (local)](#102-ollama-local)
+    - [LM Studio (local)](#103-lm-studio-local)
+    - [vLLM (self-hosted)](#104-vllm-self-hosted)
+11. [Mock mode and fixtures](#11-mock-mode-and-fixtures)
+12. [Test scenarios](#12-test-scenarios)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -288,9 +290,260 @@ KDX_MODEL=qwen2.5:7b
 
 ---
 
-## 7. Environment setup guides
+## 7. How kdx connects to your cluster
 
-### 7.1 Windows + Docker Desktop (WSL2)
+### Connection mechanism
+
+kdx uses the official Kubernetes Python client, which follows the same kubeconfig resolution as `kubectl`. No separate credentials or setup are needed beyond what `kubectl` already has.
+
+```
+kdx diagnose api-server -n production
+         │
+         ▼
+1. Check --context flag → use that context if set
+         │
+         ▼
+2. Load kubeconfig
+   ├── $KUBECONFIG env var (if set)
+   ├── ~/.kube/config (default)
+   └── /mnt/c/Users/<user>/.kube/config (WSL2 — set KUBECONFIG if needed)
+         │
+         ▼
+3. If no kubeconfig found → try in-cluster config
+   (automatic when kdx runs inside a pod with a mounted ServiceAccount)
+         │
+         ▼
+4. Connect to Kubernetes API server (HTTPS, 10s timeout)
+```
+
+The `--context` flag maps directly to a named context in your kubeconfig. To list available contexts:
+
+```bash
+kubectl config get-contexts
+```
+
+### What kdx reads (and what it doesn't)
+
+kdx is **strictly read-only**. It only calls `get` and `list` — it never creates, modifies, or deletes anything in your cluster.
+
+| API call | What it fetches | Why |
+|----------|----------------|-----|
+| `AppsV1Api.read_namespaced_deployment` | Deployment spec, replicas, conditions, image | Understand intended state |
+| `AppsV1Api.list_namespaced_replica_set` | Latest 2 ReplicaSets | Find pods owned by the deployment |
+| `CoreV1Api.list_namespaced_pod` | Up to 5 pods matching the deployment's label selector | Get pod statuses and restart history |
+| `CoreV1Api.list_namespaced_event` (pod-scoped) | Pod events from the last 30 minutes | Spot OOMKilling, BackOff, scheduling failures |
+| `CoreV1Api.list_namespaced_event` (namespace) | Namespace events from the last 30 minutes, max 50 | Catch node-level or scheduler events |
+| `CoreV1Api.read_namespaced_pod_log` | Last 100 lines of the failing container's logs | See what the app printed before crashing |
+| `CoreV1Api.read_namespaced_pod_log` (previous) | Last 50 lines from the prior container instance | See the crash output, not the retry startup |
+| `CoreV1Api.list_node` | Node labels and capacity | Diagnose unschedulable pods |
+
+### Minimum RBAC permissions
+
+If you are on a shared or production cluster, your user or service account needs these permissions. kdx will surface a clear error if any are missing.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kdx-reader
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "nodes"]
+    verbs: ["get", "list"]
+```
+
+Apply the pre-built role from the repo:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/beejak/kdx/main/deploy/rbac.yaml
+```
+
+Then bind it to your user or service account:
+
+```bash
+# Bind to a user
+kubectl create clusterrolebinding kdx-reader-binding \
+  --clusterrole=kdx-reader \
+  --user=<your-user>
+
+# Or bind to a service account (for in-cluster use)
+kubectl create clusterrolebinding kdx-reader-binding \
+  --clusterrole=kdx-reader \
+  --serviceaccount=<namespace>:<serviceaccount-name>
+```
+
+To check what your current user can do:
+
+```bash
+kubectl auth can-i list pods -n production
+kubectl auth can-i get deployments -n production
+kubectl auth can-i list events -n production
+kubectl auth can-i get nodes
+```
+
+### Namespace scoping
+
+All collection is scoped to the namespace you pass with `-n`. kdx never reads across namespaces. The only exception is node information, which is cluster-scoped — nodes are read when diagnosing `Pending` pods to check scheduling constraints.
+
+### Timeouts
+
+| Operation | Timeout | Override |
+|-----------|---------|---------|
+| Kubernetes API calls | 10 seconds | Not configurable — fast enough for any reachable cluster |
+| Model provider API | 30s (hosted) / 120s (local) | `KDX_TIMEOUT` env var |
+
+If the Kubernetes API times out, `kdx` exits with code `1` and prints the connection error. Check `kubectl cluster-info` to verify the API server is reachable.
+
+---
+
+## 8. Working with diagnosis results
+
+### Reading the output
+
+A successful diagnosis produces four panels:
+
+```
+╭─ Context ─────────────────────────────────────────────────╮
+│ api-server / production                                    │
+│ Cluster: my-gke-cluster  ·  Pre-class: OOMKilled           │
+╰────────────────────────────────────────────────────────────╯
+```
+
+**Context panel** — confirms which deployment and namespace was diagnosed, which cluster kdx connected to, and the pre-classified failure class (determined from raw container statuses before the model call).
+
+```
+╭─ Diagnosis ───────────────────────────────────────────────╮
+│ OOMKilled  (high)                                          │
+│                                                            │
+│ Container 'api' hit its 256Mi memory limit at startup      │
+│ before the JVM heap was fully initialised.                 │
+╰────────────────────────────────────────────────────────────╯
+
+  • [event] OOMKilling — pod/api-server-7d9f  14:23:01
+  • [log]   java.lang.OutOfMemoryError: Java heap space
+  • [status] exit_code=137  restart_count=8  last_reason=OOMKilled
+```
+
+**Diagnosis panel** — the failure class, confidence level, and a 1–2 sentence root cause. Below it, the evidence list shows the exact signals that support the diagnosis, each tagged with its source (`[event]`, `[log]`, `[status]`, `[pod]`).
+
+```
+╭─ fix_command ─────────────────────────────────────────────╮
+│ kubectl set resources deployment/api-server                │
+│   -c api --limits=memory=512Mi -n production               │
+╰────────────────────────────────────────────────────────────╯
+
+╭─ fix_explanation ─────────────────────────────────────────╮
+│ The current 256Mi limit is below the JVM's minimum heap    │
+│ requirement. Raising to 512Mi gives the process enough     │
+│ headroom to initialise without being killed.               │
+╰────────────────────────────────────────────────────────────╯
+```
+
+**fix_command** — a complete, copy-pasteable `kubectl` command or YAML patch. It is always scoped to the correct deployment and namespace from your original command.
+
+**fix_explanation** — why the fix works, in plain English.
+
+### Confidence levels
+
+| Level | Meaning | Recommended action |
+|-------|---------|-------------------|
+| `high` | The failure class is unambiguous from the evidence. Root cause and fix are reliable. | Apply the fix directly. |
+| `medium` | The evidence points in one direction but some signals are missing or ambiguous. | Review the evidence list before applying. Cross-check with your application's known behaviour. |
+| `low` | The failure class is unclear or the signals are contradictory. | Treat as a starting point, not a definitive answer. Use `--dump-context` and investigate manually. |
+
+### Applying the fix
+
+The `fix_command` is ready to run. Copy it from the terminal and execute it:
+
+```bash
+# Example: raise memory limit
+kubectl set resources deployment/api-server \
+  -c api --limits=memory=512Mi -n production
+
+# After applying, watch the rollout
+kubectl rollout status deployment/api-server -n production
+
+# Confirm pods are healthy
+kubectl get pods -n production -l app=api-server
+```
+
+For fixes that produce a YAML patch instead of a `kubectl` command, pipe it directly:
+
+```bash
+# If fix_command outputs a YAML patch, apply it with:
+kubectl apply -f - <<'EOF'
+<paste the YAML from fix_command here>
+EOF
+```
+
+### After the fix — verifying recovery
+
+```bash
+# 1. Watch the rollout
+kubectl rollout status deployment/<name> -n <namespace>
+
+# 2. Check new pods are running
+kubectl get pods -n <namespace>
+
+# 3. Confirm no more restarts after a few minutes
+kubectl get pods -n <namespace> -w
+
+# 4. Check events are clean
+kubectl get events -n <namespace> --sort-by='.lastTimestamp' | tail -20
+```
+
+If the pods return to the same failure state, run `kdx diagnose` again — the new signals after the attempted fix may reveal a deeper layer.
+
+### When confidence is low or the fix doesn't work
+
+1. **Capture the full context** for offline investigation:
+   ```bash
+   .venv/bin/kdx diagnose <deployment> -n <namespace> \
+     --dump-context /tmp/context.json
+   ```
+   Open `context.json` — it contains every signal kdx collected, in full. Look for signals that don't appear in the evidence list.
+
+2. **Check the logs yourself** — kdx truncates to 100 lines. If the failure is buried deeper:
+   ```bash
+   kubectl logs deployment/<name> -n <namespace> --tail=500
+   kubectl logs deployment/<name> -n <namespace> --previous --tail=200
+   ```
+
+3. **Check events across the namespace**:
+   ```bash
+   kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+   ```
+
+4. **Re-run with more context** — if you changed config or environment after the initial diagnosis, run `kdx diagnose` again. kdx always collects fresh signals; it does not cache.
+
+### Using --dump-context
+
+The `--dump-context` flag writes the collected `DiagnosisContext` JSON to a file before the model call. This is useful when:
+
+- You want to inspect exactly what was sent to the model provider
+- You want to replay a diagnosis without hitting the cluster again
+- You are filing a bug report and need to share the raw signals
+- You want to build a new fixture for offline testing
+
+```bash
+# Capture
+.venv/bin/kdx diagnose api-server -n production \
+  --dump-context /tmp/api-context.json
+
+# Replay offline (uses the saved context, skips cluster collection)
+.venv/bin/kdx diagnose api-server --mock /tmp/api-context.json
+```
+
+The JSON file is plain text and contains no credentials — only Kubernetes resource data that was already visible via `kubectl`.
+
+---
+
+## 9. Environment setup guides
+
+### 9.1 Windows + Docker Desktop (WSL2)
 
 **This is the most common development setup.**
 
@@ -360,7 +613,7 @@ Docker Desktop routes `127.0.0.1:6443` from WSL2 through a virtual network adapt
 
 ---
 
-### 7.2 macOS + Docker Desktop
+### 9.2 macOS + Docker Desktop
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -408,7 +661,7 @@ make gate-phase1
 
 ---
 
-### 7.3 Linux + minikube or kind
+### 9.3 Linux + minikube or kind
 
 **Using minikube**
 
@@ -452,7 +705,7 @@ make venv
 
 ---
 
-### 7.4 Remote cluster (GKE / EKS / AKS)
+### 9.4 Remote cluster (GKE / EKS / AKS)
 
 kdx uses your existing kubeconfig. Any cluster you can reach with `kubectl` works with `kdx`.
 
@@ -517,7 +770,7 @@ This creates a `ClusterRole` with read access to Deployments, ReplicaSets, Pods,
 
 ---
 
-### 7.5 Inside a Kubernetes pod (in-cluster)
+### 9.5 Inside a Kubernetes pod (in-cluster)
 
 `kdx` detects when it is running inside a pod and loads the in-cluster config automatically (no kubeconfig needed):
 
@@ -561,9 +814,9 @@ spec:
 
 ---
 
-## 8. Model provider setup
+## 10. Model provider setup
 
-### 8.1 Anthropic (default)
+### 10.1 Anthropic (default)
 
 **Best for:** Production use, highest diagnosis quality.
 
@@ -585,7 +838,7 @@ Your machine ──► api.anthropic.com ──► Anthropic model
 
 ---
 
-### 8.2 Ollama (local)
+### 10.2 Ollama (local)
 
 **Best for:** Development, air-gapped environments, zero API cost.
 
@@ -652,7 +905,7 @@ KDX_MODEL=qwen2.5:7b
 
 ---
 
-### 8.3 LM Studio (local)
+### 10.3 LM Studio (local)
 
 **Best for:** Windows users who prefer a GUI for model management.
 
@@ -700,7 +953,7 @@ KDX_LOCAL_BASE_URL=http://172.x.x.x:1234/v1
 
 ---
 
-### 8.4 vLLM (self-hosted)
+### 10.4 vLLM (self-hosted)
 
 **Best for:** Teams running a shared GPU inference server.
 
@@ -723,7 +976,7 @@ KDX_TIMEOUT=60
 
 ---
 
-## 9. Mock mode and fixtures
+## 11. Mock mode and fixtures
 
 Mock mode lets you run `kdx` without a live cluster or an API key (for the collection step only). It loads a pre-captured `DiagnosisContext` JSON from `tests/fixtures/`.
 
@@ -754,7 +1007,7 @@ Fixtures are plain JSON files in `tests/fixtures/`. They must match the `Diagnos
 
 ---
 
-## 10. Test scenarios
+## 12. Test scenarios
 
 kdx ships with four Kubernetes manifests that create deliberately broken Deployments, so you can test the full live diagnosis flow.
 
@@ -819,7 +1072,7 @@ kube-scheduler → find node with disktype=ssd label → none found
 
 ---
 
-## 11. Troubleshooting
+## 13. Troubleshooting
 
 ### `[kdx] ANTHROPIC_API_KEY is not set`
 
