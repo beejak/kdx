@@ -3,7 +3,7 @@ PYTEST := .venv/bin/pytest
 RUFF   := .venv/bin/ruff
 KDX    := .venv/bin/kdx
 
-.PHONY: test test-fast lint fix boundaries gate gate-phase1 up down coverage venv
+.PHONY: test test-fast lint fix boundaries gate gate-phase1 up down coverage venv push-github
 
 # ── Venv setup ────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,13 @@ gate: lint boundaries test
 gate-phase1:
 	$(KDX) --version
 	@echo "✓ Phase 1 gate passed"
+
+# ── Publish (commit all tracked/untracked changes and push to origin/main) ───
+
+push-github:
+	git add -A
+	@git diff --cached --quiet || git commit -m "docs: sync README, docs, examples, CLAUDE, kdx, tests" -m "Align docs with CLI/providers; local LLM config; boundary and test updates."
+	git push origin main
 
 # ── Scenarios (requires Docker Desktop k8s) ───────────────────────────────────
 

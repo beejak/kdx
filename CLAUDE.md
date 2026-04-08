@@ -3,8 +3,9 @@
 ## What it does
 
 `kdx diagnose <deployment> -n <namespace>` connects to the current kubeconfig context, collects
-Kubernetes signals for a failing Deployment, sends them to Claude, and prints a structured
-root-cause diagnosis with a copy-pasteable fix.
+Kubernetes signals for a failing Deployment, sends them to the configured LLM provider (Anthropic
+or OpenAI-compatible, e.g. Ollama), and prints a structured root-cause diagnosis with a
+copy-pasteable fix.
 
 Target failure classes: CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending/Unschedulable.
 
@@ -12,7 +13,7 @@ Target failure classes: CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending/U
 
 ## Tech stack
 
-- Python 3.12, Click 8, Rich 13, Pydantic v2, anthropic SDK, openai SDK, kubernetes Python client
+- Python 3.12, Click 8, Rich 13, Pydantic v2, anthropic SDK, openai SDK, python-dotenv, kubernetes Python client
 - pip + pyproject.toml (no Poetry)
 - pytest + pytest-mock for tests
 - ruff for lint/format
@@ -44,7 +45,9 @@ tests/
 ├── test_collector.py
 ├── test_prompts.py
 ├── test_engine.py
-└── test_formatter.py
+├── test_providers.py
+├── test_formatter.py
+└── test_cli.py
 
 scenarios/
 ├── crash_loop/deployment.yaml
@@ -56,6 +59,8 @@ scripts/
 ├── apply_scenario.sh         # kubectl apply -f scenarios/$1/ -n kdx-test (creates ns if needed)
 └── reset_scenario.sh         # kubectl delete namespace kdx-test --ignore-not-found
 ```
+
+Repo root (user-facing docs — keep aligned with `config.py`, `cli.py`, and this file): `README.md`, `docs/help.md`, `examples/llm_input_format.md`.
 
 ---
 
@@ -160,7 +165,7 @@ class DiagnosisError(Exception):
 
 ## Failure class pre-classification (_classify_failure in collector/k8s.py)
 
-Run this before the Claude call. Priority order when multiple signals conflict:
+Run this before the LLM call. Priority order when multiple signals conflict:
 
 1. **OOMKilled** — any ContainerStatus where `reason == "OOMKilled"` or `last_state_reason == "OOMKilled"`
 2. **CrashLoopBackOff** — any ContainerStatus where `reason == "CrashLoopBackOff"`
@@ -168,7 +173,7 @@ Run this before the Claude call. Priority order when multiple signals conflict:
 4. **Pending** — all pods have `phase == "Pending"` and none match rules 1–3
 5. **Unknown** — fallback
 
-Return the string label. This grounds the Claude prompt in a known class and reduces hallucination.
+Return the string label. This grounds the model prompt in a known class and reduces hallucination.
 
 ---
 
@@ -390,21 +395,27 @@ def build_provider(settings: Settings) -> "LLMProvider":
     raise SystemExit(2)
 ```
 
-`Settings()` is constructed in `cli.py` before any command runs. The API key is only required when `KDX_PROVIDER=anthropic`.
+`cli.py` calls `load_dotenv()` at import (from `python-dotenv`) so a `.env` in the process working directory is merged into the environment before `Settings()` reads vars. Shell-exported variables still apply; by default dotenv does not override existing env keys.
+
+After `DiagnosisContext` is built (`collect()` or `load_fixture()`), and after optional `--dump-context`, `cli.py` constructs `Settings()`, then `build_provider(settings)`, then `run_diagnosis(ctx, provider, settings.max_tokens)`. `ANTHROPIC_API_KEY` is only required when `KDX_PROVIDER=anthropic`.
 
 ---
 
 ## CLI (cli.py)
 
+Entry: `load_dotenv()` then Click group with `kdx --help` / `kdx --version`.
+
 ```
 kdx diagnose DEPLOYMENT [OPTIONS]
 
-Options:
+Options (see `kdx diagnose --help` for full text):
   -n, --namespace TEXT     Kubernetes namespace [default: default]
-  --mock FIXTURE           Use fixture instead of live cluster
-  --dump-context PATH      Write DiagnosisContext JSON to PATH before calling Claude
-  --context TEXT           Kubeconfig context name
+  --mock FIXTURE           Built-in fixture stem (tests/fixtures/<FIXTURE>.json), not a path
+  --dump-context PATH      Write DiagnosisContext JSON to PATH before calling the model
+  --context NAME           Kubeconfig context name (default: current context)
 ```
+
+`DEPLOYMENT` is required by the CLI even when `--mock` is set; in mock mode it is not used for collection.
 
 Exit codes:
 - `0` — success
@@ -427,12 +438,20 @@ def set_dummy_api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 ```
 
-This applies to every test automatically. No test should construct `Settings()` without it.
+This applies to every test automatically. Tests that need `Settings()` with `KDX_PROVIDER=anthropic` rely on this key; tests for `openai-compatible` may `monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)` explicitly.
 
 ### test_engine.py
 
-Patch `anthropic.Anthropic.messages.create` with `pytest-mock`. Never make real API calls in tests.
-Test all four fixtures. Test `DiagnosisError` is raised on bad JSON and on API 529.
+Mock an `LLMProvider` (e.g. `mocker.MagicMock()` with `complete` returning JSON text). Never patch the Anthropic or OpenAI SDK in engine tests. Never make real API calls.
+Test all four fixtures, retry-on-bad-JSON, and failure after two bad responses. Provider-level 529 behaviour is tested in `test_providers.py`.
+
+### test_providers.py
+
+Patch `anthropic.Anthropic` / `openai.OpenAI` at the call site in `providers.py`. Test `build_provider()` for both providers and unknown `KDX_PROVIDER`.
+
+### test_cli.py
+
+Use `click.testing.CliRunner`; patch `kdx.diagnosis.engine.diagnose` where a full run is not needed.
 
 ### Fixture validation test (in test_collector.py)
 
@@ -452,7 +471,7 @@ def test_all_fixtures_are_valid():
 ```toml
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "kdx"
@@ -461,9 +480,11 @@ description = "AI-powered Kubernetes deployment failure diagnosis"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",
+    "python-dotenv>=1.0",
     "rich>=13.7",
     "pydantic>=2.5",
     "anthropic>=0.25",
+    "openai>=1.0",
     "kubernetes>=29.0",
 ]
 
@@ -489,6 +510,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -690,7 +714,7 @@ Build in this order — each phase can be tested before starting the next.
 12. `tests/test_providers.py` — all provider tests
 13. Update `tests/test_engine.py` — mock provider directly (not Anthropic SDK)
 14. `kdx/output/formatter.py` — Rich panels
-15. Wire `kdx/cli.py` fully — all options, exit codes, build_provider()
+15. Wire `kdx/cli.py` fully — `load_dotenv()` at import, all options + Click `help=` text, exit codes, `build_provider()` after context
 16. `tests/test_formatter.py` + `tests/test_cli.py` — smoke tests
 17. `kdx/collector/k8s.py` — live collector (requires Docker Desktop k8s)
 18. `scenarios/` YAMLs + `scripts/` — manual QA end-to-end
@@ -706,9 +730,9 @@ These apply to every task. No exceptions, no "just this once".
 3. **Do not add error handling for scenarios that cannot happen.** Trust Pydantic validation, trust frozen models, trust the import boundaries. Only validate at system entry points (CLI args, API responses, fixture files).
 4. **Import boundaries are a hard stop.** If implementing a feature requires violating a boundary in the import rules section, stop and ask — do not work around it.
 5. **Run `make gate` before marking any phase complete.** If the gate fails, fix it before moving on. Do not move to the next phase with a failing gate.
-6. **Tests use mock mode only.** No test ever hits a live cluster or makes a real Claude API call. Patch the Anthropic SDK. Load fixtures via `load_fixture()`.
+6. **Tests use mock mode only.** No test ever hits a live cluster or makes a real model API call. Engine tests mock `LLMProvider`; provider tests patch the SDK inside `providers.py`. Load fixtures via `load_fixture()`.
 7. **Schema is frozen.** Do not add, rename, or remove fields from `DiagnosisContext` or `DiagnosisResult` without updating fixtures, prompts, and tests in the same commit.
-8. **One concern per file.** `cli.py` orchestrates. `k8s.py` collects. `engine.py` calls Claude. `formatter.py` renders. If you find yourself putting business logic in `cli.py` or k8s calls in `engine.py`, stop.
+8. **One concern per file.** `cli.py` orchestrates. `k8s.py` collects. `engine.py` calls the provider. `formatter.py` renders. If you find yourself putting business logic in `cli.py` or k8s calls in `engine.py`, stop.
 
 ---
 
@@ -813,12 +837,13 @@ Use when documentation needs updating after a code change.
 Allowed changes only:
 - Docstrings on **public functions that were changed** in this session — one-line summary only, no parameter lists unless the signature is genuinely confusing.
 - This `CLAUDE.md` file — only the section that reflects the code you changed (e.g. if you added a field to `DiagnosisContext`, update the schema section here).
+- `README.md`, `docs/help.md`, `examples/*.md` — only to match behaviour already implemented (env vars, CLI flags, flows).
 - `scenarios/README.md` — only if a new scenario was added.
 
 Not allowed:
 - Docstrings on unchanged functions.
 - Inline comments on unchanged code.
-- A separate `docs/` directory or any new `.md` file not listed above.
+- New top-level doc directories beyond `docs/` and `examples/` as already used.
 - Type annotations on code you did not touch.
 
 After making doc changes, run `make gate` to confirm nothing broke.
@@ -856,16 +881,18 @@ Hooks that run automatically on every file write:
 
 | Target | Command | Use when |
 |--------|---------|----------|
-| `make test` | `pytest tests/ -v` | Running full test suite |
-| `make test-fast` | `pytest tests/ -x -q` | Quick check during dev |
-| `make lint` | `ruff check kdx/ && ruff format kdx/ --check` | Before committing |
-| `make fix` | `ruff check kdx/ --fix && ruff format kdx/` | Fix all auto-fixable issues |
-| `make boundaries` | `python scripts/check_boundaries.py` | Check import violations |
-| `make gate` | `make lint && make boundaries && make test` | Before marking phase complete |
-| `make gate-phase1` | `kdx --version` | Phase 1 only |
+| `make test` | `$(PYTEST) tests/ -v` | Running full test suite |
+| `make test-fast` | `$(PYTEST) tests/ -x -q` | Quick check during dev |
+| `make lint` | `$(RUFF) check kdx/` + `$(RUFF) format kdx/ --check` | Before committing |
+| `make fix` | `$(RUFF) check kdx/ --fix` + `$(RUFF) format kdx/` | Fix auto-fixable issues |
+| `make boundaries` | `$(PYTHON) scripts/check_boundaries.py` | Check import violations |
+| `make gate` | `lint` + `boundaries` + `test` | Before marking phase complete |
+| `make gate-phase1` | `$(KDX) --version` | Phase 1 only |
 | `make up SCENARIO=x` | `bash scripts/apply_scenario.sh x` | Apply a k8s scenario |
 | `make down` | `bash scripts/reset_scenario.sh` | Tear down kdx-test namespace |
-| `make coverage` | `pytest tests/ --cov=kdx --cov-report=term-missing` | Coverage report |
+| `make coverage` | `$(PYTEST) tests/ --cov=kdx --cov-report=term-missing` | Coverage report |
+
+`Makefile` defines `PYTHON`, `PYTEST`, `RUFF`, and `KDX` as `.venv/bin/python`, `.venv/bin/pytest`, `.venv/bin/ruff`, `.venv/bin/kdx`.
 
 ### scripts/check_boundaries.py
 
@@ -876,6 +903,7 @@ Violations it checks:
 - `collector/mock.py` importing from `diagnosis/` or `output/`
 - `diagnosis/engine.py` importing from `collector/k8s` or `collector/mock`
 - `diagnosis/prompts.py` importing from `collector/k8s` or `collector/mock`
+- `diagnosis/providers.py` importing from `collector/k8s`, `collector/mock`, `diagnosis/engine`, or `output/`
 - `output/formatter.py` importing from `diagnosis/` or `collector/k8s` or `collector/mock`
 - `cli.py` containing any business logic (heuristic: no direct k8s SDK calls)
 
@@ -925,7 +953,10 @@ class AnthropicProvider:
                 messages=[{"role": "user", "content": user}],
             )
         except APIStatusError as e:
-            if e.status_code == 529:
+            status = getattr(e, "status_code", None)
+            if status is None and getattr(e, "response", None) is not None:
+                status = getattr(e.response, "status_code", None)
+            if status == 529:
                 raise DiagnosisError("Claude is overloaded, try again") from e
             raise DiagnosisError(str(e)) from e
         except Exception as e:
@@ -967,6 +998,8 @@ def diagnose(ctx: DiagnosisContext, provider: LLMProvider, max_tokens: int = 102
 
 ### Updated cli.py
 
+At module import: `load_dotenv()` (optional `.env` in cwd). Inside `diagnose` after context is ready:
+
 ```python
 settings = Settings()
 provider = build_provider(settings)
@@ -974,6 +1007,8 @@ result = run_diagnosis(ctx, provider, settings.max_tokens)
 ```
 
 ### Environment variables (full table including local LLM)
+
+There is **no** `KDX_LOG_LEVEL` in code today — do not document it until `config.py` implements logging.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -984,6 +1019,7 @@ result = run_diagnosis(ctx, provider, settings.max_tokens)
 | `KDX_TIMEOUT` | No | See below | HTTP timeout in seconds. Default: `30` (anthropic) or `120` (openai-compatible) |
 | `KDX_LOCAL_BASE_URL` | No | `http://localhost:11434/v1` | Base URL for openai-compatible provider |
 | `KDX_LOCAL_API_KEY` | No | `ollama` | API key for local provider (Ollama accepts any string) |
+| `KUBECONFIG` | No | platform default | Same as `kubectl` — path to kubeconfig file(s) |
 
 ### Recommended local models
 
@@ -1079,18 +1115,9 @@ def test_diagnose_raises_after_two_failures(mocker):
     assert provider.complete.call_count == 2
 ```
 
-### Boundary checker update (scripts/check_boundaries.py)
+### Boundary checker (scripts/check_boundaries.py)
 
-Add this rule to the existing checker:
-
-```python
-(
-    "kdx/diagnosis/providers.py",
-    [r"from kdx\.collector\.k8s", r"from kdx\.collector\.mock",
-     r"from kdx\.diagnosis\.engine", r"from kdx\.output"],
-    "providers.py must only import from collector/types.py",
-),
-```
+The `providers.py` rule is already part of `check_boundaries.py` (see **Harness** above).
 
 ### Phase gate for provider feature
 

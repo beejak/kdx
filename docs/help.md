@@ -226,7 +226,6 @@ kdx loads `.env` automatically on startup — no `source` or `export` needed.
 | `KDX_LOCAL_BASE_URL` | No | `http://localhost:11434/v1` | Base URL for OpenAI-compatible provider |
 | `KDX_LOCAL_API_KEY` | No | `ollama` | API key for local provider (any string for Ollama) |
 | `KUBECONFIG` | No | `~/.kube/config` | Path to kubeconfig file |
-| `KDX_LOG_LEVEL` | No | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ### Minimal .env for hosted provider (Anthropic)
 
@@ -254,7 +253,7 @@ KDX_MODEL=qwen2.5:7b
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--namespace TEXT` | `-n` | `default` | Kubernetes namespace |
-| `--mock FIXTURE` | | — | Use a fixture file instead of a live cluster |
+| `--mock FIXTURE` | | — | Use a built-in fixture (stem under `tests/fixtures/`) instead of the cluster |
 | `--dump-context PATH` | | — | Write collected data to JSON before running diagnosis |
 | `--context TEXT` | | current context | Kubeconfig context to use |
 
@@ -270,15 +269,16 @@ KDX_MODEL=qwen2.5:7b
 # Use a specific kubeconfig context
 .venv/bin/kdx diagnose api-server -n staging --context my-gke-cluster
 
-# Diagnose without a cluster (mock mode — no API key needed for collection)
+# Diagnose without a cluster (mock mode — fixture name, not a file path)
 .venv/bin/kdx diagnose crash-demo --mock crash_loop
 
-# Save the collected data for later use or debugging
+# Save the collected DiagnosisContext JSON (then inspect or copy into tests/fixtures/)
 .venv/bin/kdx diagnose api-server -n production --dump-context /tmp/context.json
-
-# Re-diagnose saved data (no cluster needed)
-.venv/bin/kdx diagnose api-server --mock /tmp/context.json
 ```
+
+`--mock` only accepts **fixture stems** shipped under `tests/fixtures/` (e.g. `crash_loop`). To reuse a saved JSON file, copy or symlink it to `tests/fixtures/<name>.json` and pass `--mock <name>`, or load it in your own tooling — the CLI does not read arbitrary paths for `--mock`.
+
+For all flags and short help text, run `kdx diagnose --help`.
 
 ### Exit codes
 

@@ -86,11 +86,13 @@ cp .env.example .env
 .venv/bin/kdx diagnose <deployment-name> -n <namespace>
 ```
 
-No cluster? Try mock mode first — no API key needed for the collection step:
+No cluster? Use **mock mode** (built-in fixtures). You still need a working model provider (e.g. `ANTHROPIC_API_KEY` for hosted Claude, or `KDX_PROVIDER=openai-compatible` for Ollama):
 
 ```bash
 .venv/bin/kdx diagnose crash-demo --mock crash_loop
 ```
+
+See `kdx diagnose --help` and [docs/help.md](docs/help.md) for options. The payload sent to the model is described in [examples/llm_input_format.md](examples/llm_input_format.md).
 
 ---
 
@@ -125,13 +127,16 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes* | — | API key for the hosted provider (*not required for local models) |
-| `KDX_MODEL` | No | `claude-sonnet-4-5` | Override the model used |
-| `KDX_MAX_TOKENS` | No | `1024` | Override max response tokens |
-| `KDX_LOG_LEVEL` | No | `WARNING` | Python log level (`DEBUG`, `INFO`, `WARNING`) |
-| `KUBECONFIG` | No | `~/.kube/config` | Path to kubeconfig file |
+| `KDX_PROVIDER` | No | `anthropic` | `anthropic` or `openai-compatible` (Ollama, LM Studio, vLLM, …) |
+| `ANTHROPIC_API_KEY` | If provider is `anthropic` | — | Anthropic API key |
+| `KDX_MODEL` | No | Provider-specific | e.g. `claude-sonnet-4-5` or `llama3.1:8b` |
+| `KDX_MAX_TOKENS` | No | `1024` | Max tokens in the model reply |
+| `KDX_TIMEOUT` | No | `30` / `120` | HTTP timeout seconds (hosted vs openai-compatible default) |
+| `KDX_LOCAL_BASE_URL` | No | `http://localhost:11434/v1` | OpenAI-compatible API base URL |
+| `KDX_LOCAL_API_KEY` | No | `ollama` | API key for local server (Ollama accepts any string) |
+| `KUBECONFIG` | No | `~/.kube/config` | Path to kubeconfig (same rules as `kubectl`) |
 
-`kdx` loads `.env` automatically — no need to `source` or `export`.
+With a `.env` file in the current working directory, variables are loaded automatically (`python-dotenv`). You can still use exported shell variables instead.
 
 ---
 
@@ -141,6 +146,7 @@ cp .env.example .env
 
 ```bash
 .venv/bin/kdx diagnose DEPLOYMENT [OPTIONS]
+.venv/bin/kdx diagnose --help   # options and syntax
 ```
 
 | Option | Default | Description |
@@ -280,6 +286,8 @@ kdx diagnose
 
 All data stays local except for the structured context sent to a remote model provider (if configured).
 
+The exact **user-message** body (header + `DiagnosisContext` JSON) is documented with a full sample in [examples/llm_input_format.md](examples/llm_input_format.md).
+
 ---
 
 ## Development
@@ -300,19 +308,14 @@ make fix
 make coverage
 ```
 
-Tests run entirely in mock mode — no live cluster or API key needed. All 27 tests pass in under 1 second.
+Tests run entirely in mock mode — no live cluster. The suite patches the diagnosis engine and providers so no real model calls occur.
 
 ---
 
 ## Documentation
 
-Full reference documentation is in [`docs/help.md`](docs/help.md), covering:
-
-- Architecture and data-flow diagrams
-- Environment setup: Windows + Docker Desktop/WSL2, macOS, Linux, remote GKE/EKS/AKS, in-cluster
-- Model provider guides: Anthropic, Ollama, LM Studio, vLLM
-- Mock mode and test fixtures
-- Troubleshooting (8 common issues with exact fix commands)
+- **[docs/help.md](docs/help.md)** — long-form reference: architecture, env setup (WSL2, macOS, Linux, remote clusters, in-cluster), model providers, mock fixtures, troubleshooting.
+- **[examples/llm_input_format.md](examples/llm_input_format.md)** — exact shape of the user message sent to the LLM (plus how to print it from Python).
 
 ---
 
