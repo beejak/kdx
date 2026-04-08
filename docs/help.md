@@ -1003,7 +1003,7 @@ This captures the full `DiagnosisContext` before the diagnosis call. You can the
 
 ### Fixture format
 
-Fixtures are plain JSON files in `tests/fixtures/`. They must match the `DiagnosisContext` schema defined in `kdx/collector/types.py`. Run `make test` after adding a new fixture — the `test_all_fixtures_are_valid` test validates all fixtures automatically.
+Fixtures are plain JSON files in `tests/fixtures/`. They must match the `DiagnosisContext` schema defined in `kdx/collector/types.py`. For a single annotated example file (same shape as `--dump-context` output), see `examples/diagnosis_context.sample.json`. Run `make test` after adding a new fixture — the `test_all_fixtures_are_valid` test validates all fixtures automatically.
 
 ---
 

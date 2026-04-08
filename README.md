@@ -316,6 +316,7 @@ Tests run entirely in mock mode — no live cluster. The suite patches the diagn
 
 - **[docs/help.md](docs/help.md)** — long-form reference: architecture, env setup (WSL2, macOS, Linux, remote clusters, in-cluster), model providers, mock fixtures, troubleshooting.
 - **[examples/llm_input_format.md](examples/llm_input_format.md)** — exact shape of the user message sent to the LLM (plus how to print it from Python).
+- **[examples/diagnosis_context.sample.json](examples/diagnosis_context.sample.json)** — example `DiagnosisContext` JSON file (what `--dump-context` writes; same shape as mock fixtures).
 
 ---
 

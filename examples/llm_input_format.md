@@ -11,6 +11,8 @@ Each diagnosis is **one chat request** with two parts:
 
 There is **no separate file upload** in the app: the “payload” is that **user** string. The same structure is what you get from `kdx diagnose ... --dump-context path.json` (raw `DiagnosisContext` JSON) except the message adds a header and may trim long logs / shrink very large JSON for token limits.
 
+**Machine-readable sample (JSON only, no `PRE-CLASSIFICATION` line):** [`diagnosis_context.sample.json`](diagnosis_context.sample.json) — same schema as `--dump-context` output and as mock fixtures under `tests/fixtures/` (content mirrors the `crash_loop` fixture, pretty-printed).
+
 ## User message format
 
 1. First line: `PRE-CLASSIFICATION: <failure_class>` (from the collector’s `_classify_failure`, e.g. `CrashLoopBackOff`).

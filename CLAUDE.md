@@ -60,7 +60,7 @@ scripts/
 └── reset_scenario.sh         # kubectl delete namespace kdx-test --ignore-not-found
 ```
 
-Repo root (user-facing docs — keep aligned with `config.py`, `cli.py`, and this file): `README.md`, `docs/help.md`, `examples/llm_input_format.md`.
+Repo root (user-facing docs — keep aligned with `config.py`, `cli.py`, and this file): `README.md`, `docs/help.md`, `examples/llm_input_format.md`, `examples/diagnosis_context.sample.json` (canonical sample of raw `DiagnosisContext` JSON for humans and tools).
 
 ---
 
@@ -694,6 +694,26 @@ bash scripts/reset_scenario.sh
 kdx diagnose <name> -n <ns> --dump-context tests/fixtures/<name>.json
 ```
 
+### Git and GitHub — default after substantive edits
+
+**Remote:** `origin` → `https://github.com/beejak/kdx.git`, branch **`main`**.
+
+When you (the agent) change **code, tests, or user-facing docs** (`README.md`, `docs/help.md`, `examples/*.md`, `CLAUDE.md`, `pyproject.toml`, etc.) and the user’s goal is to ship that work, treat **commit + push** as part of the same task — **do not wait** for a separate “now push” message unless the user explicitly wants local-only work.
+
+1. Run `make gate` (or at least `make test`) before committing when Python changed.
+2. From the repo root in **WSL** (`cd /root/cicd`), publish:
+   ```bash
+   make push-github COMMIT_SUBJECT="feat: short imperative summary"
+   ```
+   Override `COMMIT_SUBJECT` with a **specific** Conventional-Commits–style line (e.g. `docs: align README with CLI`, `fix: handle 529 from Anthropic`). If you omit it, the Makefile default applies (fine for bulk doc sync only).
+3. If `git push` fails (auth, network, sandbox): say so plainly and paste the error; do not claim GitHub is updated.
+
+**Why this is not always automatic from the IDE agent**
+
+- **Credentials:** `git push` over HTTPS needs a cached credential, PAT, or SSH agent — headless/agent sandboxes often cannot supply these.
+- **Safety:** Pushing without an explicit check can publish WIP, secrets, or broken commits; the human still owns `origin`.
+- **Environment:** Some agent terminals do not attach to WSL or swallow `git` output, so the model must **verify** with `git status` / remote or ask the user to run `make push-github` once if verification fails.
+
 ---
 
 ## Implementation order
@@ -733,6 +753,7 @@ These apply to every task. No exceptions, no "just this once".
 6. **Tests use mock mode only.** No test ever hits a live cluster or makes a real model API call. Engine tests mock `LLMProvider`; provider tests patch the SDK inside `providers.py`. Load fixtures via `load_fixture()`.
 7. **Schema is frozen.** Do not add, rename, or remove fields from `DiagnosisContext` or `DiagnosisResult` without updating fixtures, prompts, and tests in the same commit.
 8. **One concern per file.** `cli.py` orchestrates. `k8s.py` collects. `engine.py` calls the provider. `formatter.py` renders. If you find yourself putting business logic in `cli.py` or k8s calls in `engine.py`, stop.
+9. **Ship completed work to GitHub by default.** If the task was to implement or fix something in-repo and nothing said “local only”, finish with `make push-github COMMIT_SUBJECT="…"` (after `make gate` when code changed). If push cannot be verified from the environment, state that and give the exact command the user should run.
 
 ---
 
@@ -755,6 +776,8 @@ A phase is not complete until its gate passes. Run `make gate` — it must exit 
 ## Agent protocols
 
 When you receive a message prefixed with one of these, follow the protocol exactly.
+
+**No prefix — routine implementation or docs:** When the work is meant to land on GitHub, end with commit + push per **Dev workflow → Git and GitHub** and **Cursor discipline** rule 9 (`make push-github COMMIT_SUBJECT="…"` from `/root/cicd` after `make gate` if code changed).
 
 ---
 

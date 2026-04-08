@@ -1,0 +1,16 @@
+---
+description: After kdx code or doc changes, commit and push to origin/main by default
+alwaysApply: true
+---
+
+# kdx — publish workflow (GitHub)
+
+- **Remote:** `https://github.com/beejak/kdx.git`, branch **`main`**.
+- When you finish **substantive** edits (Python under `kdx/`, `tests/`, `scripts/`, or user-facing docs: `README.md`, `docs/`, `examples/`, `CLAUDE.md`, `pyproject.toml`, `Makefile`), **proactively** commit and push as part of the same task. Do not assume the user will ask separately.
+- **WSL path:** `cd /root/cicd` (or the workspace root on `\\wsl$\Ubuntu\root\cicd`).
+- **Command:** run `make gate` if you changed Python; then:
+  `make push-github COMMIT_SUBJECT="type: short description"`  
+  Use a real summary (`feat:`, `fix:`, `docs:`, `chore:`). Omit `COMMIT_SUBJECT` only for a generic bulk sync.
+- If the terminal cannot run WSL/git, credentials block push, or you cannot verify success, **say so explicitly** and give the user the exact `make push-github ...` line — do not imply GitHub updated without evidence.
+
+Full rationale and rules: **CLAUDE.md** → *Dev workflow → Git and GitHub* and *Cursor discipline* rule 9.

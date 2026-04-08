@@ -11,7 +11,15 @@
       "Bash(python /root/cicd/scripts/*)",
       "Bash(python3 /root/cicd/scripts/*)",
       "Bash(make*)",
-      "Bash(pip install*)"
+      "Bash(pip install*)",
+      "Bash(git status*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git fetch*)"
     ],
     "deny": [
       "Bash(kubectl delete namespace default*)",

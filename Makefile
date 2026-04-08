@@ -46,11 +46,14 @@ gate-phase1:
 	$(KDX) --version
 	@echo "✓ Phase 1 gate passed"
 
-# ── Publish (commit all tracked/untracked changes and push to origin/main) ───
+# ── Publish (commit all changes and push to origin/main) ───────────────────────
+# Override the subject line, e.g. make push-github COMMIT_SUBJECT='docs: fix README mock section'
+
+COMMIT_SUBJECT ?= chore: sync kdx repo
 
 push-github:
 	git add -A
-	@git diff --cached --quiet || git commit -m "docs: sync README, docs, examples, CLAUDE, kdx, tests" -m "Align docs with CLI/providers; local LLM config; boundary and test updates."
+	@git diff --cached --quiet || git commit -m "$(COMMIT_SUBJECT)"
 	git push origin main
 
 # ── Scenarios (requires Docker Desktop k8s) ───────────────────────────────────
